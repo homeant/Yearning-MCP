@@ -1,0 +1,5 @@
+/yearning-cli
+*.test
+.DS_Store
+# 凭据文件如放在仓库内时也不应提交
+credentials.json
