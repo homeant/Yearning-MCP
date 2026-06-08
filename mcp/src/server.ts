@@ -79,7 +79,9 @@ export function buildServer(client: YearningClient): McpServer {
     {
       title: "执行 SQL 查询",
       description:
-        "通过 Yearning 执行一条查询型 SQL，返回 JSON。会经过 Yearning 的 SQL 审核与字段脱敏。建议只执行 SELECT 等只读语句，并自行加 LIMIT。返回为结果行数组（JSON）；多结果集时返回数组的数组。",
+        "通过 Yearning 执行一条【只读查询】SQL（SELECT/SHOW/DESC/EXPLAIN 等 DQL），返回 JSON。会经过 Yearning 的 SQL 审核与字段脱敏。\n" +
+        "⚠️ 仅支持查询，不能执行写操作：UPDATE/INSERT/DELETE/DDL 等会被 Yearning 查询通道过滤成空语句，导致 `Error 1065: Query was empty`，且不会真正执行。写操作（DML/DDL）请走 Yearning 网页端的 SQL 审核工单流程。\n" +
+        "建议自行加 LIMIT。返回为结果行数组（JSON）；多结果集时返回数组的数组。",
       inputSchema: {
         source_id: z.string().describe("数据源 source_id"),
         schema: z.string().describe("库名"),
