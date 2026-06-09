@@ -57,6 +57,14 @@ export class YearningClient {
   private creds?: Credentials;
 
   /**
+   * 已建过查询工单的 source（进程内缓存）。
+   * 后端校验工单只按 username+status=2、不绑 source（见 Yearning personal/query.go），
+   * 工单可复用且默认配置下不过期，故同一 source 只在首次查询时建一张，后续复用，
+   * 仅当后端报“无有效工单”（过期/失效）时再补建。
+   */
+  private orderedSources = new Set<string>();
+
+  /**
    * @param endpoint Yearning 地址
    * @param token    已有 JWT，可为空
    * @param creds    用户名/密码凭据，提供后将按需自动登录、过期/401 自动重登
@@ -156,22 +164,28 @@ export class YearningClient {
   /** 执行一条 SQL 查询，返回（可能多个）结果集。 */
   async query(sourceId: string, schema: string, sql: string): Promise<ResultSet[]> {
     await this.ensureLogin();
-    await this.ensureQueryOrder(sourceId);
-    let res: WsResult;
-    try {
-      res = await this.wsQuery(sourceId, schema, sql);
-    } catch (e) {
-      // WebSocket 握手鉴权失败（ws 报 "Unexpected server response: 401/403"）时重登重试一次。
-      if (this.creds && /\b(401|403)\b/.test((e as Error).message)) {
-        await this.login(this.creds.username, this.creds.password, this.creds.ldap);
-        res = await this.wsQuery(sourceId, schema, sql);
-      } else {
-        throw e;
+
+    // 同 source 复用工单：首次查询该 source 时建一张，后续直接复用。
+    if (!this.orderedSources.has(sourceId)) {
+      await this.ensureQueryOrder(sourceId);
+      this.orderedSources.add(sourceId);
+    }
+
+    let res = await this.runQuery(sourceId, schema, sql);
+
+    // status=true 表示后端没找到有效的 status=2 工单（被作废/过期，或开启审核时尚未批准）。
+    // 补建一张工单后重试一次；若仍为 true，则多半是开启了查询审核、需人工批准。
+    if (res.status) {
+      await this.ensureQueryOrder(sourceId);
+      this.orderedSources.add(sourceId);
+      res = await this.runQuery(sourceId, schema, sql);
+      if (res.status) {
+        throw new Error(
+          "无有效查询工单：Yearning 可能开启了查询审核，请到网页端提交并等待管理员批准查询工单后重试"
+        );
       }
     }
-    if (res.status) {
-      throw new Error("无有效查询工单：Yearning 可能开启了查询审核，请等待管理员批准后重试");
-    }
+
     if (res.error) throw new Error(`查询出错：${res.error}`);
     return (res.results ?? [])
       .filter((r): r is NonNullable<typeof r> => !!r)
@@ -179,6 +193,20 @@ export class YearningClient {
         columns: (r.field ?? []).map((f) => String(f.title)),
         rows: (r.data ?? []) as Record<string, unknown>[],
       }));
+  }
+
+  /** 执行一次 WS 查询，封装 WebSocket 握手鉴权失败（401/403）后的重登重试。 */
+  private async runQuery(sourceId: string, schema: string, sql: string): Promise<WsResult> {
+    try {
+      return await this.wsQuery(sourceId, schema, sql);
+    } catch (e) {
+      // WebSocket 握手鉴权失败（ws 报 "Unexpected server response: 401/403"）时重登重试一次。
+      if (this.creds && /\b(401|403)\b/.test((e as Error).message)) {
+        await this.login(this.creds.username, this.creds.password, this.creds.ldap);
+        return await this.wsQuery(sourceId, schema, sql);
+      }
+      throw e;
+    }
   }
 
   // ---- 内部实现 ----
@@ -284,6 +312,21 @@ export class YearningClient {
       });
       ws.on("error", (err: Error) => {
         finish(() => reject(new Error(`WebSocket 错误：${err.message}`)));
+      });
+      // 服务端在返回结果前就关闭连接（后端异常 / 被代理或网关切断 / 只发心跳后断开）：
+      // 立即失败，不再傻等 60s 超时——这正是“查询卡住、MCP 随后掉线”的根因。
+      ws.on("close", (code: number, reason: Buffer) => {
+        const r = reason?.toString().trim();
+        finish(() =>
+          reject(new Error(`WebSocket 连接被关闭（code=${code}${r ? `，${r}` : ""}），未收到查询结果`))
+        );
+      });
+      // 握手返回非 101（鉴权 401/403、网关 5xx 等）。注册本监听后 ws 不再自动抛 error，
+      // 需自行 reject；消息带上状态码，使上层 runQuery 的 401/403 重登重试仍能命中。
+      ws.on("unexpected-response", (_req, res) => {
+        const status = res.statusCode;
+        res.resume(); // 排空响应流，避免 socket 挂起
+        finish(() => reject(new Error(`WebSocket 握手失败：HTTP ${status}`)));
       });
     });
   }
