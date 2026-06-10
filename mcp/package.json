@@ -1,6 +1,6 @@
 {
   "name": "yearning-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP 服务：通过 Yearning API 查询数据库数据（stdio，可 npx 运行）",
   "type": "module",
   "license": "MIT",
