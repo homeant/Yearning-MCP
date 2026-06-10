@@ -40,10 +40,23 @@ go build -o yearning-cli .
 
 ### MCP（TypeScript）
 
-```bash
-cd mcp
-npm install && npm run build
-# 然后在 Claude Desktop / Claude Code 里以 stdio 接入（见 mcp/README.md）
+已发布到 npm，在 Claude Desktop / Claude Code 里用 `npx` 直接接入（stdio），无需克隆构建：
+
+```jsonc
+// claude_desktop_config.json
+{
+  "mcpServers": {
+    "yearning": {
+      "command": "npx",
+      "args": ["-y", "yearning-mcp"],
+      "env": {
+        "YEARNING_ENDPOINT": "http://127.0.0.1:8000",
+        "YEARNING_USERNAME": "admin",
+        "YEARNING_PASSWORD": "你的密码"
+      }
+    }
+  }
+}
 ```
 
 详见 [mcp/README.md](mcp/README.md)。

@@ -14,7 +14,7 @@
 | `list_sources` | — | 列出可查询数据源（source_id / source / idc） |
 | `list_databases` | `source_id` | 列出库 |
 | `list_tables` | `source_id`, `schema` | 列出表 |
-| `query` | `source_id`, `schema`, `sql` | 执行 SQL，返回 markdown 表格 |
+| `query` | `source_id`, `schema`, `sql` | 执行只读查询 SQL，返回 JSON（多结果集时为数组的数组） |
 
 **Resources**（只读浏览）
 - `yearning://sources`
@@ -34,11 +34,7 @@
 
 ## 在 Claude Desktop / Claude Code 中接入
 
-构建后用本地路径运行（开发期）：
-
-```bash
-cd mcp && npm install && npm run build
-```
+已发布到 npm，推荐用 `npx` 直接运行，无需克隆仓库或本地构建。
 
 Claude Desktop 配置（`claude_desktop_config.json`）：
 
@@ -46,8 +42,8 @@ Claude Desktop 配置（`claude_desktop_config.json`）：
 {
   "mcpServers": {
     "yearning": {
-      "command": "node",
-      "args": ["/Users/tianhui/Project/tianhui/Yearning-cli/mcp/dist/index.js"],
+      "command": "npx",
+      "args": ["-y", "yearning-mcp"],
       "env": {
         "YEARNING_ENDPOINT": "http://127.0.0.1:8000",
         "YEARNING_USERNAME": "admin",
@@ -64,22 +60,22 @@ Claude Code（命令行）：
 claude mcp add yearning \
   -e YEARNING_ENDPOINT=http://127.0.0.1:8000 \
   -e YEARNING_USERNAME=admin -e YEARNING_PASSWORD=你的密码 \
-  -- node /Users/tianhui/Project/tianhui/Yearning-cli/mcp/dist/index.js
+  -- npx -y yearning-mcp
 ```
 
-发布到 npm 后，可直接用 npx 运行：
+> LDAP 登录追加 `-e YEARNING_LDAP=true`；或用 `-e YEARNING_TOKEN=eyJ...` 直接提供 token。
 
-```json
-{
-  "mcpServers": {
-    "yearning": {
-      "command": "npx",
-      "args": ["-y", "yearning-mcp"],
-      "env": { "YEARNING_ENDPOINT": "http://127.0.0.1:8000", "YEARNING_TOKEN": "eyJ..." }
-    }
-  }
-}
+<details>
+<summary>本地源码运行（开发期）</summary>
+
+```bash
+cd mcp && npm install && npm run build
 ```
+
+把上面配置里的 `"command": "npx"` / `"args": ["-y", "yearning-mcp"]` 换成
+`"command": "node"` / `"args": ["/<绝对路径>/mcp/dist/index.js"]` 即可。
+
+</details>
 
 ## 开发
 
