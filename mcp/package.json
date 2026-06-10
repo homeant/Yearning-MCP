@@ -3,6 +3,26 @@
   "version": "0.1.0",
   "description": "MCP 服务：通过 Yearning API 查询数据库数据（stdio，可 npx 运行）",
   "type": "module",
+  "license": "MIT",
+  "author": "homeant",
+  "homepage": "https://github.com/homeant/Yearning-MCP#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/homeant/Yearning-MCP.git",
+    "directory": "mcp"
+  },
+  "bugs": {
+    "url": "https://github.com/homeant/Yearning-MCP/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "yearning",
+    "sql",
+    "mysql",
+    "database",
+    "claude"
+  ],
   "bin": {
     "yearning-mcp": "dist/index.js"
   },
@@ -11,6 +31,10 @@
   ],
   "engines": {
     "node": ">=18"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
   },
   "scripts": {
     "build": "tsc",

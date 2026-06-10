@@ -1,0 +1,47 @@
+name: publish-mcp
+
+# 触发方式：
+#   1) 发布一个 GitHub Release（推荐）——按 package.json 里的版本发布到 npm
+#   2) 手动 workflow_dispatch，可勾选 dry_run 只构建打包、不真正发布
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "只构建并 npm pack 校验，不真正发布"
+        type: boolean
+        default: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance（发布溯源）需要
+    defaults:
+      run:
+        working-directory: mcp
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org/"
+
+      - name: Install
+        run: npm ci
+
+      - name: Test（含 build，跑进程内假后端，不连真实 Yearning）
+        run: npm test
+
+      - name: Pack（dry-run，仅手动触发且勾选 dry_run 时）
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: npm pack --dry-run
+
+      - name: Publish to npm
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
