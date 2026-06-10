@@ -1,6 +1,5 @@
 // Yearning HTTP/WebSocket API 的 TypeScript 客户端。
-// 与 Go 版（cli/internal/client）等价：不直连数据库，全部经 Yearning 接口。
-// 接口契约对齐 Yearning v3.1.9。
+// 不直连数据库，全部经 Yearning 接口。接口契约对齐 Yearning v3.1.9。
 
 import WebSocket from "ws";
 import { encode, decode } from "@msgpack/msgpack";

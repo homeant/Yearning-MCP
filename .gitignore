@@ -5,10 +5,8 @@
 *.swp
 
 # 构建产物 / 依赖（子目录另有 .gitignore，这里再兜底一次）
-/cli/yearning-cli
 mcp/node_modules/
 mcp/dist/
 
 # 凭据（绝不提交）
 credentials.json
-.yearning-cli/
