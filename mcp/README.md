@@ -21,6 +21,15 @@
 - `yearning://{sourceId}/databases`
 - `yearning://{sourceId}/{schema}/tables`
 
+**标准查询顺序**
+
+1. 先用 `list_sources` 或 `yearning://sources` 获取数据源，拿到 `source_id`。
+2. 再用 `list_databases` 获取库名（schema）。
+3. 需要浏览表时用 `list_tables`。
+4. 最后用 `query` 执行只读 SQL。
+
+`source_id` 不能用库名、数据源中文名或 IDC 代替；如果不知道 `source_id`，不要猜，先获取数据源列表。
+
 ## 配置（环境变量）
 
 | 变量 | 必填 | 说明 |
