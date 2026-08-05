@@ -12,6 +12,11 @@ export interface Source {
   source_id: string;
 }
 
+export type SqlOrderType = 0 | 1;
+export type SqlOrderSourceKind = "ddl" | "dml" | "all";
+export type OrderReviewAction = "agree" | "reject";
+export type QueryOrderReviewAction = "agreed" | "reject";
+
 export interface TreeNode {
   title: string;
   key: string;
@@ -22,6 +27,64 @@ export interface TreeNode {
 export interface ResultSet {
   columns: string[];
   rows: Record<string, unknown>[];
+}
+
+export interface OperationResult {
+  code: number;
+  text: string;
+  payload: unknown;
+}
+
+export interface SqlCheckRecord {
+  sql?: string;
+  SQL?: string;
+  error?: string;
+  Error?: string;
+  [key: string]: unknown;
+}
+
+export interface SqlOrderInput {
+  source_id: string;
+  data_base: string;
+  table: string;
+  sql: string;
+  text: string;
+  type: SqlOrderType;
+  backup?: 0 | 1;
+  delay?: string;
+  execute_time?: string;
+  relevant?: string[];
+  source?: string;
+  idc?: string;
+  file?: string;
+}
+
+export interface SqlOrderReviewInput {
+  work_id: string;
+  action: OrderReviewAction;
+  source_id?: string;
+  current_step?: number;
+  reason?: string;
+}
+
+export interface QueryOrderReviewInput {
+  work_id: string;
+  action: QueryOrderReviewAction;
+}
+
+export interface OrderListFilters {
+  status?: number;
+  type?: number;
+  text?: string;
+  username?: string;
+  real_name?: string;
+  work_id?: string;
+  picker?: [string, string];
+}
+
+export interface OrderListResult<T = unknown> {
+  data: T[];
+  page: number;
 }
 
 interface Envelope<T = unknown> {
@@ -126,7 +189,7 @@ export class YearningClient {
   /** 当前用户有查询权限的数据源。 */
   async listSources(): Promise<Source[]> {
     const env = await this.http("GET", "/api/v2/fetch/source?tp=query", undefined, true);
-    if (env.code !== CODE_SUCCESS) throw new Error(`获取数据源失败：${env.text}`);
+    this.requireSuccess(env, "获取数据源");
     // 后端此处仅 Select 了 source/id_c/source_id，其余字段为空噪音，精简掉。
     return ((env.payload as Source[]) ?? []).map((s) => ({
       source_id: s.source_id,
@@ -139,7 +202,7 @@ export class YearningClient {
   async listSchemas(sourceId: string): Promise<string[]> {
     const q = new URLSearchParams({ source_id: sourceId });
     const env = await this.http("GET", `/api/v2/query/schema?${q}`, undefined, true);
-    if (env.code !== CODE_SUCCESS) throw new Error(`获取库列表失败：${env.text}`);
+    this.requireSuccess(env, "获取库列表");
     return ((env.payload as TreeNode[]) ?? []).map((n) => n.title);
   }
 
@@ -147,9 +210,149 @@ export class YearningClient {
   async listTables(sourceId: string, schema: string): Promise<string[]> {
     const q = new URLSearchParams({ source_id: sourceId, schema });
     const env = await this.http("GET", `/api/v2/query/tables?${q}`, undefined, true);
-    if (env.code !== CODE_SUCCESS) throw new Error(`获取表列表失败：${env.text}`);
+    this.requireSuccess(env, "获取表列表");
     const wrap = (env.payload as { table?: TreeNode[] }) ?? {};
     return (wrap.table ?? []).map((n) => n.title);
+  }
+
+  /** 当前用户可提交 SQL 审核工单的数据源。 */
+  async listOrderSources(kind: SqlOrderSourceKind = "all"): Promise<Source[]> {
+    const env = await this.http("GET", `/api/v2/fetch/source?tp=${encodeURIComponent(kind)}`, undefined, true);
+    this.requireSuccess(env, "获取工单数据源");
+    return ((env.payload as Source[]) ?? []).map((s) => ({
+      source_id: s.source_id,
+      source: s.source,
+      idc: s.idc,
+    }));
+  }
+
+  /** 调用 Yearning Engine.Check 预检查待提交 SQL。kind: 0=DDL, 1=DML。 */
+  async checkSqlOrder(sourceId: string, schema: string, sql: string, kind: SqlOrderType, workId = ""): Promise<SqlCheckRecord[]> {
+    const env = await this.http(
+      "PUT",
+      "/api/v2/fetch/test",
+      { source_id: sourceId, data_base: schema, sql, kind, work_id: workId },
+      true
+    );
+    this.requireSuccess(env, "SQL 检测");
+    return (env.payload as SqlCheckRecord[]) ?? [];
+  }
+
+  /** 提交 DDL/DML SQL 审核工单。type: 0=DDL, 1=DML。 */
+  async submitSqlOrder(input: SqlOrderInput): Promise<OperationResult> {
+    const env = await this.http(
+      "POST",
+      "/api/v2/common/post",
+      {
+        source_id: input.source_id,
+        data_base: input.data_base,
+        table: input.table,
+        sql: input.sql,
+        text: input.text,
+        type: input.type,
+        backup: input.backup ?? 0,
+        delay: input.delay ?? "none",
+        execute_time: input.execute_time ?? "",
+        relevant: input.relevant ?? [],
+        source: input.source ?? "",
+        idc: input.idc ?? "",
+        file: input.file ?? "",
+      },
+      true
+    );
+    this.requireSuccess(env, "提交 SQL 工单");
+    return this.operationResult(env);
+  }
+
+  /**
+   * 审批 SQL 审核工单。
+   * 注意：最后一个审批节点同意后，Yearning 会通过审核引擎执行工单 SQL。
+   */
+  async reviewSqlOrder(input: SqlOrderReviewInput): Promise<OperationResult> {
+    if (input.action === "agree" && !input.source_id) {
+      throw new Error("审批 SQL 工单需要 source_id，用于匹配 Yearning 审批流程");
+    }
+    const env = await this.http(
+      "POST",
+      "/api/v2/audit/order/state",
+      {
+        tp: input.action,
+        work_id: input.work_id,
+        source_id: input.source_id ?? "",
+        flag: input.current_step ?? 1,
+        text: input.reason ?? "",
+      },
+      true
+    );
+    this.requireSuccess(env, input.action === "agree" ? "审批 SQL 工单" : "驳回 SQL 工单");
+    return this.operationResult(env);
+  }
+
+  /** 显式提交查询工单；query() 仍会按需自动创建查询工单。 */
+  async submitQueryOrder(sourceId: string, reason: string, exportEnabled = false): Promise<OperationResult> {
+    const env = await this.http("POST", "/api/v2/query/post", { source_id: sourceId, export: exportEnabled ? 1 : 0, text: reason }, true);
+    this.requireSuccess(env, "提交查询工单");
+    return this.operationResult(env);
+  }
+
+  /** 审批或驳回查询工单。 */
+  async reviewQueryOrder(input: QueryOrderReviewInput): Promise<OperationResult> {
+    const env = await this.http("POST", `/api/v2/audit/query/${input.action}`, { work_id: input.work_id }, true);
+    this.requireSuccess(env, input.action === "agreed" ? "审批查询工单" : "驳回查询工单");
+    return this.operationResult(env);
+  }
+
+  /** 列出 SQL 审核工单；scope=assigned 为待我审批视角，scope=mine 为我提交的工单。 */
+  async listSqlOrders(
+    scope: "assigned" | "mine" = "assigned",
+    filters: OrderListFilters = {},
+    current = 1,
+    pageSize = 20
+  ): Promise<OrderListResult> {
+    const input = {
+      current,
+      pageSize,
+      expr: {
+        picker: filters.picker ?? [],
+        text: filters.text ?? "",
+        work_id: filters.work_id ?? "",
+        type: filters.type ?? 2,
+        status: filters.status ?? (scope === "assigned" ? 2 : 8),
+        username: filters.username ?? "",
+        real_name: filters.real_name ?? "",
+      },
+    };
+    const env = await this.wsJson<Envelope<{ data?: unknown[]; page?: number }>>(
+      scope === "assigned" ? "/api/v2/audit/order/list" : "/api/v2/common/list",
+      {},
+      input,
+      "获取 SQL 工单列表"
+    );
+    this.requireSuccess(env, "获取 SQL 工单列表");
+    return { data: env.payload?.data ?? [], page: env.payload?.page ?? 0 };
+  }
+
+  /** 列出查询工单；默认返回待当前账号审批的查询工单。 */
+  async listQueryOrders(filters: OrderListFilters = {}, current = 1, pageSize = 20): Promise<OrderListResult> {
+    const input = {
+      current,
+      pageSize,
+      expr: {
+        picker: filters.picker ?? [],
+        work_id: filters.work_id ?? "",
+        status: filters.status ?? 1,
+        username: filters.username ?? "",
+        real_name: filters.real_name ?? "",
+      },
+    };
+    const env = await this.wsJson<Envelope<{ data?: unknown[]; page?: number }>>(
+      "/api/v2/audit/query/list",
+      {},
+      input,
+      "获取查询工单列表"
+    );
+    this.requireSuccess(env, "获取查询工单列表");
+    return { data: env.payload?.data ?? [], page: env.payload?.page ?? 0 };
   }
 
   /**
@@ -251,6 +454,9 @@ export class YearningClient {
     if (status === 401 || status === 403) {
       throw new Error(`鉴权失败（HTTP ${status}）：token 可能已过期或无权限，请检查凭据`);
     }
+    if (status < 200 || status >= 300) {
+      throw new Error(`请求失败（HTTP ${status}）：${text.slice(0, 200) || "空响应"}`);
+    }
     // 部分接口成功时返回空 body（如关闭审核时的 ReferQueryOrder），视作成功的空信封。
     if (text.trim() === "") {
       return { payload: null, code: CODE_SUCCESS, text: "" };
@@ -262,12 +468,82 @@ export class YearningClient {
     }
   }
 
+  private requireSuccess(env: Envelope, action: string): void {
+    if (env.code === CODE_SUCCESS) return;
+    const detail = env.text || (env.payload !== undefined ? JSON.stringify(env.payload) : "未知错误");
+    throw new Error(`${action}失败：${detail}`);
+  }
+
+  private operationResult(env: Envelope): OperationResult {
+    return { code: env.code, text: env.text ?? "", payload: env.payload ?? null };
+  }
+
   private wsURL(sourceId: string): string {
     const u = new URL(this.endpoint);
     u.protocol = u.protocol === "https:" ? "wss:" : "ws:";
     u.pathname = u.pathname.replace(/\/+$/, "") + "/api/v2/query/results";
     u.search = new URLSearchParams({ source_id: sourceId }).toString();
     return u.toString();
+  }
+
+  private wsURLFor(path: string, query: Record<string, string> = {}): string {
+    const u = new URL(this.endpoint);
+    u.protocol = u.protocol === "https:" ? "wss:" : "ws:";
+    u.pathname = u.pathname.replace(/\/+$/, "") + path;
+    u.search = new URLSearchParams(query).toString();
+    return u.toString();
+  }
+
+  private async wsJson<T>(path: string, query: Record<string, string>, input: unknown, action: string): Promise<T> {
+    await this.ensureLogin();
+    const u = new URL(this.endpoint);
+    const origin = `${u.protocol}//${u.host}`;
+    return new Promise<T>((resolve, reject) => {
+      const ws = new WebSocket(this.wsURLFor(path, query), this.token, { origin });
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try {
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+        fn();
+      };
+      const timer = setTimeout(() => {
+        finish(() => reject(new Error(`${action}超时（60s）`)));
+      }, 60_000);
+
+      ws.on("open", () => {
+        ws.send(JSON.stringify(input));
+      });
+      ws.on("message", (data: WebSocket.RawData) => {
+        const text = Array.isArray(data)
+          ? Buffer.concat(data).toString("utf8")
+          : Buffer.isBuffer(data)
+            ? data.toString("utf8")
+            : Buffer.from(new Uint8Array(data as ArrayBuffer)).toString("utf8");
+        try {
+          finish(() => resolve(JSON.parse(text) as T));
+        } catch (e) {
+          finish(() => reject(new Error(`${action}响应解析失败：${(e as Error).message}`)));
+        }
+      });
+      ws.on("error", (err: Error) => {
+        finish(() => reject(new Error(`WebSocket 错误：${err.message}`)));
+      });
+      ws.on("close", (code: number, reason: Buffer) => {
+        const r = reason?.toString().trim();
+        finish(() => reject(new Error(`WebSocket 连接被关闭（code=${code}${r ? `，${r}` : ""}），未收到结果`)));
+      });
+      ws.on("unexpected-response", (_req, res) => {
+        const status = res.statusCode;
+        res.resume();
+        finish(() => reject(new Error(`WebSocket 握手失败：HTTP ${status}`)));
+      });
+    });
   }
 
   private wsQuery(sourceId: string, schema: string, sql: string): Promise<WsResult> {

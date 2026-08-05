@@ -11,12 +11,15 @@ import { YearningClient } from "../dist/client.js";
 function startFakeYearning() {
   let wsTokenSeen = null;
   let wsRefSeen = null;
+  const httpSeen = [];
+  const wsJsonSeen = [];
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, "http://x");
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", () => {
+      const bodyJson = body ? JSON.parse(body) : null;
       const json = (obj, status = 200) => {
         res.statusCode = status;
         res.setHeader("content-type", "application/json");
@@ -25,16 +28,28 @@ function startFakeYearning() {
       if (url.pathname === "/login") {
         json({ code: 1200, payload: { token: "tok-123", real_name: "管理员", user: "admin" }, text: "" });
       } else if (url.pathname === "/api/v2/fetch/source") {
-        assert.equal(url.searchParams.get("tp"), "query", "应通过 ?tp=query 传参");
+        assert.match(url.searchParams.get("tp"), /^(query|ddl|dml|all)$/, "应通过 ?tp=... 传参");
         assert.equal(req.headers["authorization"], "Bearer tok-123");
         json({ code: 1200, payload: [{ source: "主库", idc: "bj", source_id: "s1" }], text: "" });
       } else if (url.pathname === "/api/v2/query/schema") {
         json({ code: 1200, payload: [{ title: "testdb", key: "testdb", meta: "Schema", isLeaf: false }], text: "" });
       } else if (url.pathname === "/api/v2/query/tables") {
         json({ code: 1200, payload: { table: [{ title: "account", key: "`testdb`.`account`", meta: "Table", isLeaf: true }] }, text: "" });
+      } else if (url.pathname === "/api/v2/fetch/test") {
+        httpSeen.push({ path: url.pathname, method: req.method, body: bodyJson });
+        json({ code: 1200, payload: [{ SQL: bodyJson.sql, Error: "" }], text: "" });
+      } else if (url.pathname === "/api/v2/common/post") {
+        httpSeen.push({ path: url.pathname, method: req.method, body: bodyJson });
+        json({ code: 1200, payload: null, text: "工单提交成功" });
+      } else if (url.pathname === "/api/v2/audit/order/state") {
+        httpSeen.push({ path: url.pathname, method: req.method, body: bodyJson });
+        json({ code: 1200, payload: null, text: "工单已审批" });
       } else if (url.pathname === "/api/v2/query/post") {
-        res.statusCode = 200;
-        res.end(); // 关闭审核时的空 body
+        httpSeen.push({ path: url.pathname, method: req.method, body: bodyJson });
+        json({ code: 1200, payload: null, text: "查询工单已提交" });
+      } else if (url.pathname === "/api/v2/audit/query/agreed" || url.pathname === "/api/v2/audit/query/reject") {
+        httpSeen.push({ path: url.pathname, method: req.method, body: bodyJson });
+        json({ code: 1200, payload: null, text: "查询工单已处理" });
       } else {
         res.statusCode = 404;
         res.end();
@@ -43,17 +58,33 @@ function startFakeYearning() {
   });
 
   let wsOriginSeen = null;
-  const wss = new WebSocketServer({ server, path: "/api/v2/query/results" });
+  const wss = new WebSocketServer({ server });
   wss.on("connection", (ws, req) => {
+    const pathname = new URL(req.url, "http://x").pathname;
     wsTokenSeen = req.headers["sec-websocket-protocol"] || null;
     wsOriginSeen = req.headers["origin"] || null;
     ws.on("message", (data) => {
-      wsRefSeen = decode(data);
-      const out = encode({
-        query_time: 5,
-        results: [{ field: [{ title: "n" }], data: [{ n: "1" }] }],
-      });
-      ws.send(out);
+      if (pathname === "/api/v2/query/results") {
+        wsRefSeen = decode(data);
+        const out = encode({
+          query_time: 5,
+          results: [{ field: [{ title: "n" }], data: [{ n: "1" }] }],
+        });
+        ws.send(out);
+        return;
+      }
+      const body = JSON.parse(data.toString());
+      wsJsonSeen.push({ path: pathname, body });
+      ws.send(
+        JSON.stringify({
+          code: 1200,
+          payload: {
+            data: [{ work_id: pathname.includes("/query/") ? "Q-1" : "SQL-1", status: body.expr.status }],
+            page: 1,
+          },
+          text: "",
+        })
+      );
     });
   });
 
@@ -66,6 +97,8 @@ function startFakeYearning() {
         token: () => wsTokenSeen,
         origin: () => wsOriginSeen,
         ref: () => wsRefSeen,
+        httpSeen: () => httpSeen,
+        wsJsonSeen: () => wsJsonSeen,
       });
     });
   });
@@ -171,6 +204,75 @@ test("query：WebSocket msgpack 往返 + token 经 Sec-WebSocket-Protocol", asyn
     assert.equal(results.length, 1);
     assert.deepEqual(results[0].columns, ["n"]);
     assert.deepEqual(results[0].rows, [{ n: "1" }]);
+  } finally {
+    fake.server.close();
+  }
+});
+
+test("SQL 工单：数据源、检测、提交、列表与审批", async () => {
+  const fake = await startFakeYearning();
+  try {
+    const c = new YearningClient(fake.url, "tok-123");
+    const sources = await c.listOrderSources("dml");
+    assert.equal(sources[0].source_id, "s1");
+
+    const checked = await c.checkSqlOrder("s1", "testdb", "UPDATE account SET name='a' WHERE id=1", 1);
+    assert.equal(checked[0].SQL, "UPDATE account SET name='a' WHERE id=1");
+
+    const submitted = await c.submitSqlOrder({
+      source_id: "s1",
+      data_base: "testdb",
+      table: "account",
+      sql: "UPDATE account SET name='a' WHERE id=1",
+      text: "修正测试账号名称",
+      type: 1,
+      backup: 1,
+      relevant: ["alice"],
+    });
+    assert.equal(submitted.text, "工单提交成功");
+
+    const listed = await c.listSqlOrders("assigned", { status: 2, type: 1 }, 1, 10);
+    assert.deepEqual(listed, { data: [{ work_id: "SQL-1", status: 2 }], page: 1 });
+
+    const reviewed = await c.reviewSqlOrder({ work_id: "SQL-1", action: "agree", source_id: "s1", current_step: 1 });
+    assert.equal(reviewed.text, "工单已审批");
+
+    assert.deepEqual(fake.httpSeen().map((x) => x.path), [
+      "/api/v2/fetch/test",
+      "/api/v2/common/post",
+      "/api/v2/audit/order/state",
+    ]);
+    assert.equal(fake.httpSeen()[1].body.relevant[0], "alice");
+    assert.deepEqual(fake.httpSeen()[2].body, {
+      tp: "agree",
+      work_id: "SQL-1",
+      source_id: "s1",
+      flag: 1,
+      text: "",
+    });
+    assert.equal(fake.wsJsonSeen()[0].path, "/api/v2/audit/order/list");
+    assert.equal(fake.wsJsonSeen()[0].body.expr.type, 1);
+  } finally {
+    fake.server.close();
+  }
+});
+
+test("查询工单：提交、列表与审批", async () => {
+  const fake = await startFakeYearning();
+  try {
+    const c = new YearningClient(fake.url, "tok-123");
+    const submitted = await c.submitQueryOrder("s1", "临时排查", true);
+    assert.equal(submitted.text, "查询工单已提交");
+
+    const listed = await c.listQueryOrders({ status: 1 }, 1, 10);
+    assert.deepEqual(listed, { data: [{ work_id: "Q-1", status: 1 }], page: 1 });
+
+    const reviewed = await c.reviewQueryOrder({ work_id: "Q-1", action: "agreed" });
+    assert.equal(reviewed.text, "查询工单已处理");
+    assert.deepEqual(fake.httpSeen().map((x) => x.path), ["/api/v2/query/post", "/api/v2/audit/query/agreed"]);
+    assert.deepEqual(fake.httpSeen()[0].body, { source_id: "s1", export: 1, text: "临时排查" });
+    assert.deepEqual(fake.httpSeen()[1].body, { work_id: "Q-1" });
+    assert.equal(fake.wsJsonSeen()[0].path, "/api/v2/audit/query/list");
   } finally {
     fake.server.close();
   }
